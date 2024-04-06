@@ -29,8 +29,8 @@ mouth_indices = [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291, 375, 321, 405,
 mouth_margin_indices = [57, 186, 92, 165, 167, 164, 393, 391, 322, 410, 287, 273, 335, 406, 313, 18, 83, 182, 106, 43]
 
 # Paths to your images
-src_image_path = 'img.png'
-dst_image_path = 'dst.jpg'  # This could be a frontal face template
+src_image_path = 'test/linus.png'
+dst_image_path = 'templates/forward.png'  # This could be a frontal face template
 
 # Extract landmarks from both images
 src_landmarks = get_landmarks(src_image_path)
@@ -51,7 +51,7 @@ def apply_local_homography(src_image, src_points, dst_points):
 
     # Blend the warped source feature into the original source image
     blended = np.where(mask == 255, warped_src, src_image)
-    return blended
+    return warped_src
 
 
 # Load the source image to apply transformations

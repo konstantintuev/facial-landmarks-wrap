@@ -2,20 +2,24 @@ from enum import Enum
 
 import cv2
 import numpy as np
-import mediapipe as mp
 import os
+import mediapipe as mp
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
 
-from extract_head import extract_head, extract_person
+from extract_head import extract_head
 
+base_options = python.BaseOptions(model_asset_path='face_landmarker_v2_with_blendshapes.task',
+                                  delegate=python.BaseOptions.Delegate.CPU)
+options = vision.FaceLandmarkerOptions(base_options=base_options,
+                                       output_face_blendshapes=False,
+                                       output_facial_transformation_matrixes=False,
+                                       num_faces=1,
+                                       min_face_detection_confidence = 0.2,
+                                       min_face_presence_confidence = 0.2,
+                                       min_tracking_confidence = 0.2)
+detector = vision.FaceLandmarker.create_from_options(options)
 # Initialize MediaPipe Face Mesh
-mp_face_mesh = mp.solutions.face_mesh
-face_mesh = mp_face_mesh.FaceMesh(
-    static_image_mode=True,
-    max_num_faces=1,
-    refine_landmarks=True,
-    min_detection_confidence=0.2,
-    min_tracking_confidence=0.2
-)
 
 
 # Function to create a mask for landmarks
@@ -48,6 +52,7 @@ all_indices = list(range(468))  # All landmark indices
 
 def apply_global_homography(orig_image, orig_points_list, pose_src_points_list):
     src_points = np.vstack(orig_points_list)
+
 
     dst_points = np.vstack(pose_src_points_list)
 
@@ -107,11 +112,12 @@ def apply_global_homography(orig_image, orig_points_list, pose_src_points_list):
 
 # Function to extract facial landmarks
 def get_landmarks(image, get_z=False):
-    img_height, img_width, _ = image.shape
-    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    results = face_mesh.process(image_rgb)
-    if results.multi_face_landmarks:
-        landmarks = results.multi_face_landmarks[0].landmark
+    img_height = image.height
+    img_width = image.width
+
+    detection_result = detector.detect(image)
+    if detection_result.face_landmarks:
+        landmarks = detection_result.face_landmarks[0]
         if get_z:
             return [(int(lm.x * img_width), int(lm.y * img_height), int(lm.z * 3000)) for lm in landmarks]
         else:
@@ -119,18 +125,14 @@ def get_landmarks(image, get_z=False):
     print("No landmarks detected in image.")
     return None
 
-# TODO: use offset to determine ref image
-# e.g. a bit to the left -> forward
-# e.g. a lot to the left -> more to the left or something like that idk
+
 class HeadPost(Enum):
     LEFT = "templates/person_looking_forward.jpg"
     RIGHT = "templates/person_looking_forward.jpg"
     DOWN = "templates/person_looking_forward.jpg"
     UP = "templates/person_looking_forward.jpg"
     FORWARD = "templates/person_looking_right.jpg"
-
-
-def estimateHeadposition(img_h, img_w, landmarks):
+def estimate_headposition(img_h, img_w, landmarks):
     face_2d = []
     face_3d = []
 
@@ -168,9 +170,19 @@ def estimateHeadposition(img_h, img_w, landmarks):
         y = angles[1] * 360
         z = angles[2] * 360
 
-        threshold = 4  # def = 10
+        threshold = 4 # def = 10
 
-        text = parse_head_pose(threshold, x, y)
+        # here based on axis rot angle is calculated
+        if y < -threshold:
+            text = HeadPost.LEFT
+        elif y > threshold:
+            text = HeadPost.RIGHT
+        elif x < -threshold:
+            text = HeadPost.DOWN
+        elif x > threshold:
+            text = HeadPost.UP
+        else:
+            text = HeadPost.FORWARD
 
         print("Head looking: ", text)
         return text
@@ -179,23 +191,8 @@ def estimateHeadposition(img_h, img_w, landmarks):
         return None
 
 
-def parse_head_pose(threshold, x, y):
-    # here based on axis rot angle is calculated
-    if y < -threshold:
-        text = HeadPost.LEFT
-    elif y > threshold:
-        text = HeadPost.RIGHT
-    elif x < -threshold:
-        text = HeadPost.DOWN
-    elif x > threshold:
-        text = HeadPost.UP
-    else:
-        text = HeadPost.FORWARD
-    return text
-
-
 # Paths to your source and destination (template) images
-src_imgage_name='linus'
+src_imgage_name='tech'
 
 
 orig_image_path = f'test/{src_imgage_name}.png'
@@ -203,13 +200,14 @@ orig_image = cv2.imread(orig_image_path)
 
 
 # Extract landmarks from both images
-orig_landmarks = get_landmarks(orig_image, get_z=True)
+orig_landmarks = get_landmarks(mp.Image(image_format=mp.ImageFormat.SRGB, data=orig_image), get_z=True)
 
-pose_src_image_path = estimateHeadposition(orig_image.shape[0], orig_image.shape[1], orig_landmarks)
-pose_src_image = cv2.imread(pose_src_image_path.value or "templates/person_looking_forward.jpg")
-# orig_landmarks has x, y, z -> remove z
+pose_src_image_path = estimate_headposition(orig_image.shape[0], orig_image.shape[1], orig_landmarks)
+#orig_landmarks has x, y, z -> remove z
 orig_landmarks = [lm[:2] for lm in orig_landmarks]
-pose_src_landmarks = get_landmarks(pose_src_image)
+pose_src_image = cv2.imread(pose_src_image_path.value or "templates/person_looking_forward.jpg")
+
+pose_src_landmarks = get_landmarks(mp.Image(image_format=mp.ImageFormat.SRGB, data=pose_src_image))
 # Aggregate source and destination points for all features
 orig_points_list = [np.float32([orig_landmarks[i] for i in indices]) for indices in
                     [all_indices]]
@@ -226,7 +224,7 @@ os.makedirs(extract_dir, exist_ok=True)
 
 cv2.imwrite(f'{extract_dir}/corrected.png', corrected_image)
 # Re-extract landmarks from the corrected image to get updated positions
-corrected_landmarks = get_landmarks(corrected_image)  # Assuming the corrected image is saved and loaded here
+corrected_landmarks = get_landmarks(mp.Image(image_format=mp.ImageFormat.SRGB, data=corrected_image))  # Assuming the corrected image is saved and loaded here
 
 # Assuming dst_landmarks are the target landmarks after homography
 
@@ -258,6 +256,6 @@ for feature, feature_indices, feature_margin_indices in [
     cv2.imwrite(f'{extract_dir}/{feature}_margin_only_corrected.png', feature_margin_only_image)
     cv2.imwrite(f'{extract_dir}/{feature}_only_corrected.png', feature_only_image)
 
-face_mesh.close()
+detector.close()
 print("Facial feature images with perspective correction saved.")
-extract_person(f'{extract_dir}/corrected.png')
+extract_head(f'{extract_dir}/corrected.png')
